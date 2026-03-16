@@ -1,35 +1,27 @@
-# src/database.py
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from config import DB_PATH, logger
 
-
 @contextmanager
 def get_db_connection():
-    """Контекстный менеджер для безопасного подключения к БД."""
     conn = sqlite3.connect(
         DB_PATH,
         detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
     )
-    # Включаем поддержку внешних ключей
     conn.execute("PRAGMA foreign_keys = ON;")
-    # Возвращаем строки как словари для удобства (по ключам)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
     finally:
         conn.close()
 
-
 def init_db():
-    """Создает таблицы, если они еще не существуют."""
     logger.info("Инициализация базы данных...")
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # 1. Таблица рыночных предметов (то, по чему ищем цену)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS market_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +33,6 @@ def init_db():
             )
         """)
 
-        # 2. Таблица твоих конкретных предметов в инвентаре
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS inventory_assets (
                 asset_id TEXT PRIMARY KEY,
@@ -53,7 +44,6 @@ def init_db():
             )
         """)
 
-        # 3. Таблица истории цен (временные ряды)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS price_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,18 +56,26 @@ def init_db():
             )
         """)
 
-        # 4. Таблица очереди сообщений для Telegram
+        # Таблица для бизнес-алертов (рост/падение цен)
         cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS alert_queue (
-                       id INTEGER PRIMARY KEY AUTOINCREMENT,
-                       message_text TEXT NOT NULL,
-                       status TEXT DEFAULT 'pending',
-                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                   )
-               """)
+           CREATE TABLE IF NOT EXISTS alert_queue_biz (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               message_text TEXT NOT NULL,
+               status TEXT DEFAULT 'pending',
+               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )
+        """)
 
+        # Таблица для инфо-алертов (старт, краш, логи)
+        cursor.execute("""
+           CREATE TABLE IF NOT EXISTS alert_queue_info (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               message_text TEXT NOT NULL,
+               status TEXT DEFAULT 'pending',
+               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+           )
+        """)
 
-        # Индексы для ускорения поиска по истории
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_price_history_item_time 
             ON price_history(market_item_id, recorded_at);
@@ -85,8 +83,6 @@ def init_db():
 
         conn.commit()
     logger.info("Таблицы успешно проверены/созданы.")
-
-
 
 if __name__ == "__main__":
     init_db()

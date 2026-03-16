@@ -1,4 +1,3 @@
-# src/alerts_sender.py
 import platform
 import subprocess
 import requests
@@ -7,10 +6,15 @@ from config import logger, load_settings
 from database import get_db_connection
 
 settings = load_settings()
-TELEGRAM_TOKEN = settings.get("telegram_token", "")
-TELEGRAM_CHAT_ID = settings.get("telegram_chat_id", "")
 
-# ПРОКСИ ДЛЯ ТЕЛЕГРАМА (если в РФ)
+# Бизнес алерты
+TG_BIZ_TOKEN = settings.get("telegram_biz_token", "")
+TG_BIZ_CHAT_ID = settings.get("telegram_biz_chat_id", "")
+
+# Инфо алерты
+TG_INFO_TOKEN = settings.get("telegram_info_token", "")
+TG_INFO_CHAT_ID = settings.get("telegram_info_chat_id", "")
+
 PROXY_URL = ""
 TG_PROXIES = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 
@@ -24,14 +28,14 @@ if IS_WINDOWS:
         toast = None
 
 class TelegramSender:
-    def __init__(self, token: str, chat_id: str):
+    def __init__(self, token: str, chat_id: str, table_name: str):
         self.token = token
         self.chat_id = chat_id
-        self.api_url = f"https://api.telegram.org/bot{self.token}/sendMessage"
+        self.table_name = table_name
+        self.api_url = f"https://api.telegram.org/bot{self.token}/sendMessage" if self.token else None
 
     def enqueue_message(self, title: str, text: str):
-        """Кладет сообщение в базу данных (очередь), а не отправляет сразу."""
-        if not self.token or not self.chat_id:
+        if not self.api_url or not self.chat_id:
             return
 
         safe_title = html.escape(title)
@@ -40,60 +44,50 @@ class TelegramSender:
 
         try:
             with get_db_connection() as conn:
+                # Прямая вставка имени таблицы безопасна, т.к. мы задаем её сами в коде
                 conn.execute(
-                    "INSERT INTO alert_queue (message_text, status) VALUES (?, ?)",
+                    f"INSERT INTO {self.table_name} (message_text, status) VALUES (?, ?)",
                     (formatted_message, 'pending')
                 )
                 conn.commit()
-            logger.debug("Алерт добавлен в Telegram-очередь.")
         except Exception as e:
-            logger.error(f"Ошибка при записи в очередь БД: {e}")
+            logger.error(f"Ошибка при записи в {self.table_name}: {e}")
 
     def process_queue(self):
-        """Пытается отправить все накопившиеся сообщения из очереди пачками."""
-        if not self.token or not self.chat_id:
+        if not self.api_url or not self.chat_id:
             return
 
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, message_text FROM alert_queue WHERE status = 'pending' ORDER BY id ASC")
+                cursor.execute(f"SELECT id, message_text FROM {self.table_name} WHERE status = 'pending' ORDER BY id ASC")
                 pending_messages = cursor.fetchall()
 
             if not pending_messages:
                 return
 
-            logger.info(f"Найдено {len(pending_messages)} сообщений. Склеиваем для массовой отправки...")
-
-            # Максимальная длина сообщения в Telegram - 4096 символов. Берем с запасом 4000.
+            logger.info(f"[{self.table_name}] Склеиваем {len(pending_messages)} сообщений...")
             MAX_LEN = 4000
-
             batches = []
             current_text = ""
             current_ids = []
 
-            # Группируем сообщения в пачки
             for msg in pending_messages:
                 msg_id = msg['id']
                 text = msg['message_text']
                 separator = "\n\n➖➖➖➖➖➖\n\n"
 
-                # Если добавление текста превысит лимит, сохраняем текущую пачку и начинаем новую
                 if current_text and (len(current_text) + len(separator) + len(text) > MAX_LEN):
                     batches.append((current_text, current_ids))
                     current_text = text
                     current_ids = [msg_id]
                 else:
-                    if current_text:
-                        current_text += separator + text
-                    else:
-                        current_text = text
+                    current_text = current_text + separator + text if current_text else text
                     current_ids.append(msg_id)
 
             if current_text:
                 batches.append((current_text, current_ids))
 
-            # Отправляем сформированные пачки
             for batch_text, batch_ids in batches:
                 payload = {
                     "chat_id": self.chat_id,
@@ -103,72 +97,66 @@ class TelegramSender:
                 }
 
                 try:
-                    # Увеличиваем read timeout до 60 секунд
                     response = requests.post(self.api_url, json=payload, proxies=TG_PROXIES, timeout=(10, 60))
 
                     if response.status_code == 200:
-                        # Успех! Удаляем сразу всю отправленную пачку по их ID одним запросом
                         with get_db_connection() as conn:
                             placeholders = ','.join('?' * len(batch_ids))
-                            conn.execute(f"DELETE FROM alert_queue WHERE id IN ({placeholders})", tuple(batch_ids))
+                            conn.execute(f"DELETE FROM {self.table_name} WHERE id IN ({placeholders})", tuple(batch_ids))
                             conn.commit()
-                        logger.info(f"Успешно отправлена пачка из {len(batch_ids)} сообщений одним запросом!")
+                        logger.info(f"Успешно отправлена пачка из {len(batch_ids)} сообщений!")
 
                     elif response.status_code == 429:
-                        logger.warning("Слишком много запросов к Telegram (429). Ждем следующего цикла.")
-                        break  # Прерываем отправку оставшихся пачек
+                        logger.warning("Слишком много запросов к Telegram (429). Ждем.")
+                        break
 
                     else:
                         logger.error(f"Ошибка TG API ({response.status_code}): {response.text}")
-                        # Если словили ошибку 400 (например, кривой HTML), удаляем пачку, чтобы не застопорить очередь навсегда
                         if response.status_code == 400:
                             with get_db_connection() as conn:
                                 placeholders = ','.join('?' * len(batch_ids))
-                                conn.execute(f"DELETE FROM alert_queue WHERE id IN ({placeholders})", tuple(batch_ids))
+                                conn.execute(f"DELETE FROM {self.table_name} WHERE id IN ({placeholders})", tuple(batch_ids))
                                 conn.commit()
                         continue
 
                 except requests.exceptions.ReadTimeout:
-                    # Запрос ушел, но Telegram слишком долго отвечал. Сообщение, скорее всего, доставлено.
-                    logger.warning(
-                        "Telegram не ответил за 60 секунд (ReadTimeout). Удаляем пачку во избежание спама дублями.")
+                    logger.warning("Telegram не ответил за 60 секунд. Удаляем пачку.")
                     with get_db_connection() as conn:
                         placeholders = ','.join('?' * len(batch_ids))
-                        conn.execute(f"DELETE FROM alert_queue WHERE id IN ({placeholders})", tuple(batch_ids))
+                        conn.execute(f"DELETE FROM {self.table_name} WHERE id IN ({placeholders})", tuple(batch_ids))
                         conn.commit()
-                    continue  # Пробуем отправить следующую пачку, не прерывая цикл
-
+                    continue
                 except requests.exceptions.ConnectionError as e:
-                    # Реально нет интернета или недоступен сервер Telegram (ConnectTimeout)
-                    logger.error(f"Нет связи с сервером Telegram (ConnectionError): {e}")
-                    break  # Сети нет, прерываем цикл, дошлем в следующий раз
-
+                    logger.error(f"Нет связи с сервером Telegram: {e}")
+                    break
                 except requests.exceptions.RequestException as e:
-                    # Любая другая непредвиденная ошибка сети
-                    logger.error(f"Неизвестный сбой сети при отправке пачки: {e}")
+                    logger.error(f"Неизвестный сбой сети: {e}")
                     break
 
         except Exception as e:
-            logger.error(f"Непредвиденная ошибка при обработке очереди: {e}")
+            logger.error(f"Ошибка при обработке {self.table_name}: {e}")
 
+tg_biz_sender = TelegramSender(TG_BIZ_TOKEN, TG_BIZ_CHAT_ID, "alert_queue_biz")
+tg_info_sender = TelegramSender(TG_INFO_TOKEN, TG_INFO_CHAT_ID, "alert_queue_info")
 
-tg_sender = TelegramSender(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
-
-
-def send_toast(title: str, body: str):
-    logger.info(f"[АЛЕРТ] {title} | {body}")
-
-    # 1. Desktop
+def _show_desktop_toast(title: str, body: str):
     if IS_WINDOWS and 'toast' in globals() and toast:
         try:
             toast(title, body, app_id="Skin Watcher", audio={'silent': False})
-        except Exception as e:
-            logger.error(f"Ошибка Windows Toast: {e}")
+        except Exception:
+            pass
     elif not IS_WINDOWS:
         try:
             subprocess.run(['notify-send', title, body], check=False)
-        except Exception as e:
+        except Exception:
             pass
 
-    # 2. Telegram - теперь просто кладет в БД
-    tg_sender.enqueue_message(title, body)
+def send_biz_alert(title: str, body: str):
+    logger.info(f"[БИЗНЕС АЛЕРТ] {title} | {body}")
+    _show_desktop_toast(title, body)
+    tg_biz_sender.enqueue_message(title, body)
+
+def send_info_alert(title: str, body: str):
+    logger.info(f"[ИНФО АЛЕРТ] {title} | {body}")
+    # _show_desktop_toast(title, body) # Раскомментируй, если хочешь получать Windows уведомления даже для инфо-алертов
+    tg_info_sender.enqueue_message(title, body)
