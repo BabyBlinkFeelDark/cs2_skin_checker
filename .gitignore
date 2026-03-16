@@ -1,0 +1,34 @@
+# Секреты и конфигурации (важно для безопасности)
+.env
+*.key
+*.pem
+secrets.json
+
+# Системные файлы macOS и Windows
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Папки редакторов кода и IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Логи, кэш и временные файлы
+*.log
+tmp/
+temp/
+.cache/
+npm-debug.log*
+
+# Популярные папки с зависимостями
+node_modules/
+venv/
+.venv/
+__pycache__/
+
+# Папки сборки
+build/
+dist/
+data
