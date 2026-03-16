@@ -5,7 +5,6 @@ import os
 import sys
 import time
 
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
 from src.alerts_sender import send_toast
@@ -69,9 +68,35 @@ if __name__ == "__main__":
 
     # Прямо отсюда запускаем проверку, чтобы не ждать полного цикла main.py
     from src.services import WatcherService
+    from src.alerts_sender import tg_sender
 
     # Заглушка SteamID, он здесь не важен, так как мы проверяем только БД
     watcher = WatcherService("76561198000000000")
     print("\n--- ЗАПУСК ПРОВЕРКИ ---")
     watcher.check_price_alerts()
     print("--- ПРОВЕРКА ЗАВЕРШЕНА ---")
+
+    print("\n--- ЗАПУСК ОТПРАВКИ ОЧЕРЕДИ В TELEGRAM ---")
+    while True:
+        # 1. Запускаем почтальона (он сам сходит в БД, возьмет сообщения и попытается отправить)
+        tg_sender.process_queue()
+
+        # 2. Проверяем базу, остались ли еще сообщения в очереди
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) FROM alert_queue WHERE status = 'pending'")
+            count = cursor.fetchone()[0]
+        except sqlite3.OperationalError:
+            # На случай, если таблицы почему-то нет
+            count = 0
+        finally:
+            conn.close()
+
+        # 3. Принимаем решение: выходим или ждем
+        if count == 0:
+            print("✅ Очередь пуста! Все сообщения успешно доставлены в Telegram.")
+            break
+        else:
+            print(f"⏳ Сообщений в очереди: {count}. Ждем 5 секунд перед повторной попыткой...")
+            time.sleep(5)

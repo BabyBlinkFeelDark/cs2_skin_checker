@@ -7,10 +7,11 @@ from steam_api import SteamClient
 from alerts_sender import send_toast
 
 class WatcherService:
-    def __init__(self, steam_id, drop_threshold=30.0, rise_threshold=25.0, proxy_url=None):
+    def __init__(self, steam_id, drop_threshold=30.0, rise_threshold=25.0,min_diff_dollars: float = 0.5, proxy_url=None):
         self.steam_client = SteamClient(steam_id, proxy_url=proxy_url)
         self.drop_threshold = drop_threshold
         self.rise_threshold = rise_threshold
+        self.min_diff_dollars = min_diff_dollars
 
     def sync_inventory(self):
         """Синхронизирует инвентарь пользователя с локальной базой."""
@@ -98,7 +99,8 @@ class WatcherService:
     def check_price_alerts(self):
         """
         Сравнивает последнюю записанную цену со вчерашней (или предыдущей)
-        и отправляет уведомление, если есть резкий скачок.
+        и отправляет уведомление, если есть резкий скачок,
+        превышающий как процентный порог, так и порог в долларах.
         """
         logger.info("Проверка сигналов изменения цены...")
 
@@ -139,18 +141,26 @@ class WatcherService:
             if old_price <= 0:
                 continue
 
+            # 1. Считаем абсолютную разницу в долларах
+            price_diff_abs = abs(current_price - old_price)
+
+            # 2. Если изменение меньше нашего минимального порога (например, < $0.50), просто пропускаем этот скин
+            if price_diff_abs < self.min_diff_dollars:
+                continue
+
+            # 3. Если абсолютный порог пройден, проверяем проценты
             percent_change = ((current_price - old_price) / old_price) * 100
 
             if percent_change <= -self.drop_threshold:
                 msg = f"📉 ПАДЕНИЕ на {abs(percent_change):.1f}%! Было ${old_price:.2f}, стало ${current_price:.2f}"
                 logger.warning(f"СИГНАЛ: {name} | {msg}")
-                send_toast(f"Просадка цены: {name}", msg)
+                send_toast(f"Просадка: {name}", msg)
                 alerts_found += 1
 
             elif percent_change >= self.rise_threshold:
                 msg = f"📈 РОСТ на {percent_change:.1f}%! Было ${old_price:.2f}, стало ${current_price:.2f}"
                 logger.warning(f"СИГНАЛ: {name} | {msg}")
-                send_toast(f"Взлет цены: {name}", msg)
+                send_toast(f"Взлет: {name}", msg)
                 alerts_found += 1
 
         logger.info(f"Проверка завершена. Найдено сигналов: {alerts_found}")

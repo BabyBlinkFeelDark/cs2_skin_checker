@@ -66,6 +66,17 @@ def init_db():
             )
         """)
 
+        # 4. Таблица очереди сообщений для Telegram
+        cursor.execute("""
+                   CREATE TABLE IF NOT EXISTS alert_queue (
+                       id INTEGER PRIMARY KEY AUTOINCREMENT,
+                       message_text TEXT NOT NULL,
+                       status TEXT DEFAULT 'pending',
+                       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                   )
+               """)
+
+
         # Индексы для ускорения поиска по истории
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_price_history_item_time 
@@ -74,6 +85,7 @@ def init_db():
 
         conn.commit()
     logger.info("Таблицы успешно проверены/созданы.")
+
 
 
 if __name__ == "__main__":

@@ -52,7 +52,7 @@ class SteamClient:
             headers["Referer"] = f"https://steamcommunity.com/profiles/{self.steam_id}/inventory/"
             headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
 
-            response = requests.get(url, headers=headers, timeout=10)
+            response = requests.get(url, headers=headers, timeout=20)
 
             if response.status_code == 429:
                 logger.error("Steam заблокировал запросы (429 Too Many Requests). Нужно подождать.")
