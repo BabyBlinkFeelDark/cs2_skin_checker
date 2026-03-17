@@ -84,39 +84,21 @@ if __name__ == "__main__":
     success = inject_time_travel_data()
 
     if success:
-        from src.services import WatcherService
+        # ИМПОРТЫ ИЗМЕНИЛИСЬ ЗДЕСЬ
+        from src.repositories.price_repository import PriceRepository
+        from src.usecases.analyze_alerts import AnalyzeAlertsUseCase
         from src.alerts_sender import tg_biz_sender, tg_info_sender
 
-        # Инициализируем сервис (с порогом роста в 25%)
-        watcher = WatcherService("76561198000000000", rise_threshold=25.0, drop_threshold=25.0)
-
         print("\n--- 🔍 ЗАПУСК ПРОВЕРКИ АЛЕРТОВ ---")
-        watcher.check_price_alerts()
+
+        # Инициализируем только нужный нам для теста UseCase
+        repo = PriceRepository()
+        alerts_uc = AnalyzeAlertsUseCase(
+            price_repo=repo,
+            drop_threshold=25.0,
+            rise_threshold=25.0,
+            min_diff_dollars=0.5
+        )
+
+        alerts_uc.execute()
         print("--- 🏁 ПРОВЕРКА ЗАВЕРШЕНА ---")
-
-        print("\n--- 📤 ЗАПУСК ОТПРАВКИ ОЧЕРЕДЕЙ В ТЕЛЕГРАМ ---")
-        while True:
-            tg_biz_sender.process_queue()
-            tg_info_sender.process_queue()
-
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            try:
-                cursor.execute("SELECT COUNT(*) FROM alert_queue_biz WHERE status = 'pending'")
-                count_biz = cursor.fetchone()[0]
-
-                cursor.execute("SELECT COUNT(*) FROM alert_queue_info WHERE status = 'pending'")
-                count_info = cursor.fetchone()[0]
-
-                total_count = count_biz + count_info
-            except sqlite3.OperationalError:
-                total_count = 0
-            finally:
-                conn.close()
-
-            if total_count == 0:
-                print("✅ Обе очереди пусты! Все сообщения успешно доставлены.")
-                break
-            else:
-                print(f"⏳ Осталось сообщений (Бизнес: {count_biz}, Инфо: {count_info}). Ждем 5 сек...")
-                time.sleep(5)
